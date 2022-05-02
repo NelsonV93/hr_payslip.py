@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from cgi import print_arguments
-import zipfile
-
-from numpy import diag_indices
+from email.policy import default
 from odoo import fields, models, api, _, tools
 from odoo.exceptions import Warning, UserError, ValidationError
 
@@ -20,12 +17,14 @@ import http
 import logging
 from io import StringIO
 from odoo.exceptions import ValidationError
+import re
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from OpenSSL import crypto
 type_ = crypto.FILETYPE_PEM
 _logger = logging.getLogger("HOLI!!!!!!!")
+import zipfile
 
 try:
     import zlib
@@ -37,6 +36,7 @@ log = logging.getLogger('requests')
 log.setLevel(logging.DEBUG)
 http.client.HTTPConnection.debuglevel = 1
 
+import base64
 
 PAYSLIP_TEMPLATE = 'l10n_co_payroll.payslip_template'
 
@@ -45,7 +45,6 @@ URLSEND = {
     '2': "https://vpfe-hab.dian.gov.co/WcfDianCustomerServices.svc?wsdl",
 }
 
-
 class HrPayslip(models.Model):
     _name = 'hr.payslip'
     _inherit = ['hr.payslip', 'mail.thread', 'mail.activity.mixin']
@@ -53,12 +52,13 @@ class HrPayslip(models.Model):
     adj_method = fields.Selection([('adjustment', 'Adjustment Note'), ('elimination', 'Elimination Note')], string='Adjustment Method')
     refund_reason = fields.Char(string='Reason')
     refund_date = fields.Date(string='Refund Date')
+    document_source = fields.Char(string='Document Source')
+
     payslip_refunded_id = fields.Many2one("hr.payslip", copy=False)
     cune = fields.Char(copy=False)
     trackid = fields.Char(copy=False)
     date_send_dian = fields.Date(copy=False)
-    note_type = fields.Selection(
-        [('1', 'Ajustar'), ('2', 'Eliminar')], copy=False)
+    note_type = fields.Selection([('1', 'Ajustar'), ('2', 'Eliminar')], copy=False)
 
     l10n_co_dian_status = fields.Selection(
         selection=[
@@ -89,7 +89,7 @@ class HrPayslip(models.Model):
         copy=False)
 
     l10n_co_payslip_attch_name = fields.Char(string='Payslip name', copy=False, readonly=True,
-                                             help='The attachment name of the CFDI.')
+        help='The attachment name of the CFDI.')
 
     payment_method = fields.Selection([
         ('1', 'Instrumento no Definido'),
@@ -170,49 +170,42 @@ class HrPayslip(models.Model):
         ('97', 'Clearing entre partners'),
         ('98', 'Cuentas de Ahorro de Tramite Simplificado (CATS)(Nequi, Daviplata, etc)'),
         ('ZZZ', 'Acuerdo mutuo'),
-    ],
+        ],
         string="Metodo de Pago",
         required=True,
-        default='1'
-    )
-
-    it_is_integral = fields.Boolean(
-        string="Es integral", compute='_calculate_integral')
+        default='1',
+        )
+    
+    it_is_integral = fields.Boolean(string="Es integral", compute='_calculate_integral')
     is_prima = fields.Boolean(string="Incluir Prima de Servicios")
     no_prima_days = fields.Integer(string="Dias Trabajados")
-    no_vacac_liq = fields.Integer(string="Dias Trabajados (Vacaciones)")
+    no_vacac_liq  = fields.Integer(string="Dias Trabajados (Vacaciones)")
     no_cesan_liq = fields.Float()
     no_prima_liq = fields.Float()
     is_liquid = fields.Boolean()
     no_dias_disfrute = fields.Float()
-    fecha_inicio_vac = fields.Date()
-    fecha_fin_vac = fields.Date()
-    numero_dias_vac_dis = fields.Float()
 
-    @api.multi
     def refund_sheet(self):
-    #   for payslip in self:
-    #        copied_payslip = payslip.copy({'credit_note': True, 'name': _(
-    #            'Refund: ') + payslip.name, 'payslip_refunded_id': payslip.id})
-    #        number = copied_payslip.number or self.env['ir.sequence'].next_by_code(
-    #            'salary.slip')
-    #        copied_payslip.write(
-    #            {'number': number, 'payslip_refunded_id': payslip.id})
-    #        copied_payslip.with_context(
-    #            without_compute_sheet=True).action_payslip_done()
-    #    formview_ref = self.env.ref('hr_payroll.view_hr_payslip_form', False)
-    #    treeview_ref = self.env.ref('hr_payroll.view_hr_payslip_tree', False)
-    #    return {
-    #        'name': ("Refund Payslip"),
-    #        'view_mode': 'tree, form',
-    #        'view_id': False,
-    #        'view_type': 'form',
-    #        'res_model': 'hr.payslip',
-    #        'type': 'ir.actions.act_window',
-    #        'target': 'current',
-    #        'domain': "[('id', 'in', %s)]" % copied_payslip.ids,
-    #        'views': [(treeview_ref and treeview_ref.id or False, 'tree'), (formview_ref and formview_ref.id or False, 'form')],
-    #        'context': {}
+        # for payslip in self:
+        #     copied_payslip = payslip.copy({'credit_note': True, 'name': _('Refund: ') + payslip.name, 'payslip_refunded_id': payslip.id})
+        #     number = copied_payslip.number or self.env['ir.sequence'].next_by_code('salary.slip')
+        #     copied_payslip.write({'number': number, 'payslip_refunded_id': payslip.id})
+        #     copied_payslip.with_context(without_compute_sheet=True).action_payslip_done()
+        # formview_ref = self.env.ref('bi_hr_payroll.view_hr_payslip_form', False)
+        # treeview_ref = self.env.ref('bi_hr_payroll.view_hr_payslip_tree', False)
+        # return {
+        #     'name': ("Refund Payslip"),
+        #     'view_mode': 'tree, form',
+        #     'view_id': False,
+        #     'view_type': 'form',
+        #     'res_model': 'hr.payslip',
+        #     'type': 'ir.actions.act_window',
+        #     'target': 'current',
+        #     'domain': "[('id', 'in', %s)]" % copied_payslip.ids,
+        #     'views': [(treeview_ref and treeview_ref.id or False, 'tree'), (formview_ref and formview_ref.id or False, 'form')],
+        #     'context': {}
+        # }
+
         ctx = {'default_payslip_id': self.ids[0], 'default_refund_date': self.date_to}
         return {
             'name': ("Adjustment Method"),
@@ -222,14 +215,12 @@ class HrPayslip(models.Model):
             'type': 'ir.actions.act_window',
             'target': 'new',
             'context': ctx,
-
         }
 
     def payslip_main_template(self):
-
         payslip_main_template = """<%(XmlNodo)s xmlns="dian:gov:co:facturaelectronica:%(XmlNodo)s" SchemaLocation="" xmlns:xades="http://uri.etsi.org/01903/v1.3.2#"
-xmlns:xs="http://www.w3.org/2001/XMLSchema-instance" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
-xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="dian:gov:co:facturaelectronica:NominaIndividual NominaIndividualElectronicaXSD.xsd">
+        xmlns:xs="http://www.w3.org/2001/XMLSchema-instance" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
+        xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="dian:gov:co:facturaelectronica:NominaIndividual NominaIndividualElectronicaXSD.xsd">
                                     <ext:UBLExtensions>
                                         <ext:UBLExtension>
                                             <ext:ExtensionContent></ext:ExtensionContent>
@@ -263,8 +254,8 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         if self.credit_note:
             if self.note_type == "1":
                 payslip_main_template = """<%(XmlNodo)s xmlns="dian:gov:co:facturaelectronica:%(XmlNodo)s" SchemaLocation="" xmlns:xades="http://uri.etsi.org/01903/v1.3.2#"
-xmlns:xs="http://www.w3.org/2001/XMLSchema-instance" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
-xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="dian:gov:co:facturaelectronica:NominaIndividualDeAjuste NominaIndividualDeAjusteElectronicaXSD.xsd">
+                xmlns:xs="http://www.w3.org/2001/XMLSchema-instance" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
+                xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="dian:gov:co:facturaelectronica:NominaIndividualDeAjuste NominaIndividualDeAjusteElectronicaXSD.xsd">
                                     <ext:UBLExtensions>
                                             <ext:UBLExtension>
                                                 <ext:ExtensionContent></ext:ExtensionContent>
@@ -300,8 +291,8 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                                     </%(XmlNodo)s>"""
             if self.note_type == "2":
                 payslip_main_template = """<%(XmlNodo)s xmlns="dian:gov:co:facturaelectronica:%(XmlNodo)s" SchemaLocation="" xmlns:xades="http://uri.etsi.org/01903/v1.3.2#"
-xmlns:xs="http://www.w3.org/2001/XMLSchema-instance" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
-xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="dian:gov:co:facturaelectronica:NominaIndividualDeAjuste NominaIndividualDeAjusteElectronicaXSD.xsd">
+            xmlns:xs="http://www.w3.org/2001/XMLSchema-instance" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
+            xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="dian:gov:co:facturaelectronica:NominaIndividualDeAjuste NominaIndividualDeAjusteElectronicaXSD.xsd">
                                     <ext:UBLExtensions>
                                             <ext:UBLExtension>
                                                 <ext:ExtensionContent></ext:ExtensionContent>
@@ -396,7 +387,6 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                                                                         EncripCUNE="CUNE-SHA384"
                                                                         FechaGen="%(FechaGen)s"
                                                                         HoraGen="%(HoraGen)s"/>"""
-
         return payslip_informacion_general_template
 
     def payslip_empleador_template(self):
@@ -430,28 +420,24 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         return payslip_trabajador_template
 
     def generate_payslip_deducciones(self):
-        deducciones = ''
+        deducciones = ded_otra = deducciones_otras = ''
+        valor_otra = 0
         for line_values in self.line_ids.filtered(lambda l: l.salary_rule_id.rule_type == 'deducciones'):
             if line_values.code == '1008':
-                deducciones += '<Salud Porcentaje="4" Deduccion="' + \
-                    str(line_values.total)+'" />'
+                deducciones += '<Salud Porcentaje="4" Deduccion="'+str(line_values.total)+'" />'
             if line_values.code == '1009':
-                deducciones += '<FondoPension Porcentaje="4" Deduccion="' + \
-                    str(line_values.total)+'" />'
-            if line_values.code == 'SAR':
-                deducciones += '<Anticipos><Anticipo>%(SAR)s</Anticipo></Anticipos>' % {
-                    "SAR": abs(line_values.total)}
+                deducciones += '<FondoPension Porcentaje="4" Deduccion="'+str(line_values.total)+'" />'
+            if line_values.code == '1090':
+                deducciones += '<Anticipos><Anticipo>%(SAR)s</Anticipo></Anticipos>'%{"SAR": abs(line_values.total)}
             if line_values.code == '1013':
                 deducciones_otras = '<OtrasDeducciones>/deduccion</OtrasDeducciones>'
                 ded_otra = '<OtraDeduccion>/valor</OtraDeduccion>'
                 valor_otra = line_values.total
                 deducciones += deducciones_otras.replace('/deduccion', ded_otra.replace('/valor',str(valor_otra)))
             if line_values.code == '1011':
-                deducciones += '<FondoSP Porcentaje="1" DeduccionSP="' + \
-                    str(line_values.total) + '"/>'
+                deducciones += '<FondoSP Porcentaje="1" DeduccionSP="' + str(line_values.total) + '"/>'
             if line_values.code == '1014':
-                deducciones += '<RetencionFuente>' + \
-                    str(line_values.total) + '</RetencionFuente>'
+                deducciones += '<RetencionFuente>' + str(line_values.total) + '</RetencionFuente>'
         return deducciones
 
     def generate_payslip_devengados(self):
@@ -459,16 +445,14 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         dias_disfrute = self.no_dias_disfrute
         numero_liquidacion_prima = self.no_prima_liq
         sueldo = dias = False
-
-        PagoCesan = vacacion = dias_vac_liq = prima = numero_de_dias_prima = bono = markbon = bonoepctv = bonoepctvs = PagoIntereses = mark = markb = 0
-        auxilio = viaticos = viaticos_s = viaticos_ns = vacaciones = bonificacion = bonificaciones = bon = heds = hed = hens = hen = hrns = BonoEPCTVs = BonoEPCTV = BonoEPCTV1 = hrn = \
+        PagoCesan = vacacion = dias_vac_liq = prima = numero_de_dias_prima = bono = markbon = bonoepctv = bonoepctvs = PagoIntereses = markb = 0
+        auxilio = viaticos_s = viaticos_ns = vacaciones = bonificacion = bonificaciones = bon = heds = hed = hens = hen = hrns = BonoEPCTVs = BonoEPCTV = BonoEPCTV1 = hrn = \
                 heddfs = heddf = hrddfs = hrddf = hendfs = hendf = hrndfs = hrndf = pagotercero = pagoterceros = incapacidades =\
-                PagoAlimentacionNS = comision = incapacidad = licencias = licenciasmp = licenciasr = incapacidad_eps = incapacidad_arl = lines_leaves = ""
+                PagoAlimentacionNS = comision = incapacidad = licencias = licenciasmp = licenciasr = ""
         s = ns = asal = ans = bon_ns = ""
 
         for wline in self.worked_days_line_ids:
-            if wline.code == "WORK100":
-                dias = int(wline.number_of_days)
+            dias = int(wline.number_of_days)
 
         for line_values in self.line_ids.filtered(lambda l: l.salary_rule_id.rule_type == 'devengos'):
             if line_values.code == '1100' or line_values.code == '1200' or line_values.code == '1300':
@@ -477,10 +461,10 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                 auxilio = 'AuxilioTransporte="%s"' % (line_values.total)
 
             if line_values.code == '1103-1' or line_values.code == '1203-1' or line_values.code == '1303-1':
-                viaticos_s = 'ViaticoManutAlojS="%s"' % (line_values.total)
+                viaticos_s = 'ViaticoManuAlojS="%s"' % (line_values.total)
                 
             if line_values.code == '1103-2' or line_values.code == '1203-2' or line_values.code == '1303-2':    
-                viaticos_ns = 'ViaticoManutAlojNS="%s"' % (line_values.total)
+                viaticos_ns = 'ViaticoManuAlojNS="%s"' % (line_values.total)
 
             if line_values.code == '1107-4' or line_values.code == '1207-4' or line_values.code == '1307-4':
                 # Horas Extras Diurna normal
@@ -586,26 +570,15 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                     str(self.fecha_fin_vac) + '" Cantidad="' + str(int(self.numero_dias_vac_dis)) + '" Pago="' + str(line_values.total) + '"/> </Vacaciones>'
             if line_values.code == '1116' or line_values.code == '1216' or line_values.code == '1316':
                 if self.vacaciones_compensadas:
-                    _dias = int(self.numero_dias_vac_com)
-                    if _dias == 0:
-                        _dias = 1
-                    vacaciones = '<Vacaciones><VacacionesCompensadas Cantidad="' + str(_dias) + '" Pago="' + str(line_values.total) + '"/> </Vacaciones>'
+                    vacaciones = '<Vacaciones><VacacionesCompensadas Cantidad="' + str(int(self.numero_dias_vac_com)) + '" Pago="' + str(line_values.total) + '"/> </Vacaciones>'
                     _logger.info(vacaciones)
                 else:
-                    for lines_leaves in self.leaves_ids:
-                        if lines_leaves.holiday_status_id.name == "VACACIONES DE DISFRUTE":
-                            _logger.info("estoy_entrando-...........-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.--.-.-.")
-                            _fecha_inicio = lines_leaves.request_date_from if lines_leaves.request_date_from >= self.date_from else self.date_from
-                            _fecha_fin = lines_leaves.request_date_to if lines_leaves.request_date_to <= self.date_to else self.date_to
-                            for days in self.worked_days_line_ids:
-                                if days.code == 'VACACIONES DE DISFRUTE':
-                                    cantidad = int(days.number_of_days)
-                            print(_fecha_fin)
-                            vacaciones = '<Vacaciones><VacacionesComunes FechaInicio="' + \
-                            str(_fecha_inicio) +'" FechaFin="' + \
-                            str(_fecha_fin) + '" Cantidad="' + str(cantidad) + '" Pago="' + str(line_values.total) + '"/> </Vacaciones>'
-                            _logger.info(vacaciones)
-                            _logger.info(_fecha_inicio)
+                    vacacion = line_values.total
+                    dias_vac_liq = self.no_vacac_liq
+                    vacaciones = '<Vacaciones><VacacionesComunes FechaInicio="' + \
+                    str(self.fecha_inicio_vac) +'" FechaFin="' + \
+                    str(self.fecha_fin_vac) + '" Cantidad="' + str(int(self.numero_dias_vac_dis)) + '" Pago="' + str(line_values.total) + '"/> </Vacaciones>'
+                    _logger.info(vacaciones)
             # prima
             if line_values.code == '1118' or line_values.code == '1218' or line_values.code == '1318':
                 prima = line_values.total
@@ -617,11 +590,7 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                 PagoCesan = line_values.total
             # incapacidades
             if line_values.code == '1005':
-                pago = line_values.total
-                mark = 1
-                for line_eps in self.line_ids.filtered(lambda l: l.salary_rule_id.rule_type == 'devengos'):
-                    if line_eps.code == '1006':
-                        pago += line_eps.total
+                incapacidades = '<Incapacidades>incapacidad/</Incapacidades>'
                 for lines_leaves in self.leaves_ids:
                     if lines_leaves.holiday_status_id.name == "EPS":
                         cantidad = lines_leaves.duration_display
@@ -632,37 +601,10 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                         fecha_inicio = lines_leaves.date_from
                         fecha_fin = lines_leaves.date_to
                         tipo = lines_leaves.type_leave_disease_dian
-                        #pago = lines_leaves.pago
-                        incapacidad_eps = '<Incapacidad FechaInicio="' + str(fecha_inicio.strftime("%Y-%m-%d")) + '" FechaFin="' + str(fecha_fin.strftime("%Y-%m-%d")) + '" Cantidad="' + str(
-                        int(cantidad)) + '" Tipo="' + str(tipo) + '" Pago="' + str(round(pago, 2)) + '" />'
-                        print(incapacidad_eps, "EPS")
-
-            if line_values.code == '1002':
-                mark = 1
-                for lines_leaves in self.leaves_ids:
-                    pago = line_values.total
-                    cantidad = lines_leaves.duration_display
-                    try:
-                        cantidad = float(str(cantidad).replace(" day(s)", ""))
-                    except:
-                        cantidad = float(str(cantidad).replace(" dia(s)", ""))
-                    fecha_inicio = lines_leaves.date_from
-                    fecha_fin = lines_leaves.date_to
-                    tipo = lines_leaves.type_leave_disease_dian
-                    #pago = lines_leaves.pago
-                    incapacidad_arl = '<Incapacidad FechaInicio="' + str(fecha_inicio.strftime("%Y-%m-%d")) + '" FechaFin="' + str(fecha_fin.strftime("%Y-%m-%d")) + '" Cantidad="' + str(
-                    int(cantidad)) + '" Tipo="' + str(tipo) + '" Pago="' + str(round(pago)) + '" />'
-                    print(incapacidad_arl, "ARL")
-
-            incapacidades =  incapacidad_eps + " " + incapacidad_arl
-            print(incapacidades, "NODO")
-
-            if mark == 1:    
-                if incapacidad == "":
-                        incapacidad = '<Incapacidades>incapacidades/</Incapacidades>'
-                elif incapacidad == '<Incapacidades>incapacidades/</Incapacidades>':
-                    pass
-
+                        pago = lines_leaves.pago
+                        incapacidad = '<Incapacidad FechaInicio="' + str(fecha_inicio.strftime("%Y-%m-%d")) + '" FechaFin="' + str(fecha_fin.strftime("%Y-%m-%d")) + '" Cantidad="' + str(
+                        cantidad) + '" Tipo="' + str(tipo) + '" Pago="' + str(pago) + '" />'
+            
             if line_values.code == '1001':
                 if licencias == "":
                     licencias = '<Licencias>licenciasmp/</Licencias>'
@@ -727,17 +669,13 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                 for lines_leaves in self.leaves_ids:
                     if lines_leaves.holiday_status_id.name == "AUSENCIA_NO_REMUNERADO":
                         cantidad = lines_leaves.duration_display
-                        print(cantidad)
                         try:
-                            print("entraaaaaaaaaaaaaaaaaa")
                             cantidad = float(str(cantidad).replace(" day(s)", ""))
-                            print(cantidad)
                         except:
                             cantidad = float(str(cantidad).replace(" dia(s)", ""))
-                        print(cantidad)
                         licenciasmp += '<LicenciaNR FechaInicio="%(hora_inicio)s" FechaFin="%(hora_fin)s" Cantidad="%(cantidad)s"/>' % {'hora_inicio': lines_leaves.date_from.strftime("%Y-%m-%d"),
                                                                                                                                         'hora_fin': lines_leaves.date_to.strftime("%Y-%m-%d"),
-                                                                                                                                        'cantidad': str(int(cantidad))}
+                                                                                                                                        'cantidad': lines_leaves.duration_display}
                 
 
             if line_values.code == '1120' or line_values.code == '1220' or line_values.code == '1320':
@@ -795,8 +733,8 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         devengados += '<Basico DiasTrabajados="' + \
             str(dias)+'" SueldoTrabajado="'+str(sueldo)+'" />'
         if auxilio != "" or viaticos_s != "" or viaticos_ns != "":
-            devengados += '<Transporte %(auxilio)s %(ViaticoManutAlojS)s %(ViaticoManutAlojNS)s/>' % {
-                "ViaticoManutAlojNS": viaticos_ns, "ViaticoManutAlojS": viaticos_s, 'auxilio': auxilio}
+            devengados += '<Transporte %(auxilio)s %(ViaticoManuAlojS)s %(ViaticoManuAlojNS)s/>' % {
+                "ViaticoManuAlojNS": viaticos_ns, "ViaticoManuAlojS": viaticos_s, 'auxilio': auxilio}
 
         if heds != "":
             devengados += heds.replace("heds/", hed)
@@ -833,7 +771,8 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         # incapacidades
         if incapacidad != "":
             print("gavitest"*100)
-            devengados += incapacidad.replace("incapacidades/", incapacidades)
+            devengados += incapacidades.replace("incapacidad/", incapacidad)
+        #Licencias
         if licencias != "":
             devengados += licencias.replace("licenciasmp/", licenciasmp)
         #Bonificacion
@@ -849,13 +788,12 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         if pagoterceros != "":
             devengados += pagoterceros.replace("PagoTercero/", pagotercero)
 
-        return devengados
+        return devengados          
 
     def generate_payslip_trabajador(self, payslip_trabajador_template):
         tipoTrabajador = str(self.employee_id.employee_type)
         subTipoTrabajador = str(self.employee_id.employee_subtype)
-        altoRiesgoPension = str(
-            self.employee_id.high_risk and 'true' or 'false')
+        altoRiesgoPension = str(self.employee_id.high_risk and 'true' or 'false')
         tipoDocumento = str(self.employee_id.document_type)
         numeroDocumento = str(self.employee_id.id_document_payroll)
         primerApellido = str(self.employee_id.second_namem)
@@ -863,33 +801,31 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         primerNombre = str(self.employee_id.first_name)
         otrosNombres = str(self.employee_id.first_name)
         lugarTrabajoPais = str(self.employee_id.address_id.country_id.code)
-        lugarTrabajoDepartamentoEstado = str(
-            self.employee_id.address_id.state_id.l10n_co_edi_code)
-        lugarTrabajoMunicipioCiudad = str(
-            self.employee_id.address_id.xcity.code)
+        lugarTrabajoDepartamentoEstado = str(self.employee_id.company.state_id.l10n_co_edi_code)
+        lugarTrabajoMunicipioCiudad = str(self.employee_id.address_id.xcity.code)
         lugarTrabajoDireccion = str(self.employee_id.address_id.street)
         salarioIntegral = str(self.it_is_integral and 'true' or 'false')
         tipoContrato = str(self.contract_id.contract_type)
         sueldo = str(self.contract_id.wage)
         codigoTrabajador = str(self.employee_id.id)
         trabajador = payslip_trabajador_template % {
-            'TipoTrabajador': tipoTrabajador,
-            'SubTipoTrabajador': subTipoTrabajador,
-            'AltoRiesgoPension': altoRiesgoPension,
-            'TipoDocumento': tipoDocumento,
-            'NumeroDocumento': numeroDocumento,
-            'PrimerApellido': primerApellido,
-            'SegundoApellido': segundoApellido,
-            'PrimerNombre': primerNombre,
-            'OtrosNombres': otrosNombres,
-            'LugarTrabajoPais': lugarTrabajoPais,
-            'LugarTrabajoDepartamentoEstado': lugarTrabajoDepartamentoEstado,
-            'LugarTrabajoMunicipioCiudad': lugarTrabajoMunicipioCiudad,
-            'LugarTrabajoDireccion': lugarTrabajoDireccion,
-            'SalarioIntegral': salarioIntegral,
-            'TipoContrato': tipoContrato,
-            'Sueldo': sueldo,
-            'CodigoTrabajador': codigoTrabajador,
+            'TipoTrabajador' : tipoTrabajador,
+            'SubTipoTrabajador' : subTipoTrabajador,
+            'AltoRiesgoPension' : altoRiesgoPension,
+            'TipoDocumento' : tipoDocumento,
+            'NumeroDocumento' : numeroDocumento,
+            'PrimerApellido' : primerApellido,
+            'SegundoApellido' : segundoApellido,
+            'PrimerNombre' : primerNombre,
+            'OtrosNombres' : otrosNombres,
+            'LugarTrabajoPais' : lugarTrabajoPais,
+            'LugarTrabajoDepartamentoEstado' : lugarTrabajoDepartamentoEstado,
+            'LugarTrabajoMunicipioCiudad' : lugarTrabajoMunicipioCiudad,
+            'LugarTrabajoDireccion' : lugarTrabajoDireccion,
+            'SalarioIntegral' : salarioIntegral,
+            'TipoContrato' : tipoContrato,
+            'Sueldo' : sueldo,
+            'CodigoTrabajador' : codigoTrabajador,
         }
         return trabajador
 
@@ -898,25 +834,24 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         nit = str(self.company_id.partner_id.xidentification)
         dv = str(self.company_id.partner_id.dv)
         pais = str(self.company_id.country_id.code)
-        departamentoEstado = str(self.company_id.state_id.l10n_co_edi_code)
-        municipioCiudad = str(self.company_id.partner_id.xcity.code)
+        departamentoEstado = str(self.employee_id.company.state_id.l10n_co_edi_code)
+        municipioCiudad =  str(self.company_id.partner_id.xcity.code)
         direccion = str(self.company_id.street)
         empleador = payslip_empleador_template % {
             'RazonSocial' : RazonSocial,
-            'NIT': nit,
-            'DV': dv,
-            'Pais': pais,
-            'DepartamentoEstado': departamentoEstado,
-            'MunicipioCiudad': municipioCiudad,
-            'Direccion': direccion,
+            'NIT' : nit,
+            'DV' : dv,
+            'Pais' : pais,
+            'DepartamentoEstado' : departamentoEstado,
+            'MunicipioCiudad' : municipioCiudad,
+            'Direccion' : direccion,
         }
         return empleador
 
     def generate_payslip_informacion_general(self, payslip_informacion_general_template):
         ambiente = str(self.company_id.is_test)
         tipoXML = str(self._get_tipo_xml())
-        CUNE = str(self._generate_CUNE(
-            self._get_date_gen(), self._get_time_colombia()))
+        CUNE = str(self._generate_CUNE(self._get_date_gen(), self._get_time_colombia()))
         fechaGen = str(self._get_date_gen())
         horaGen = str(self._get_time_colombia())
         self.update({'cune': CUNE, 'date_send_dian': fechaGen})
@@ -925,13 +860,13 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
 
         informacion_general = payslip_informacion_general_template % {
             'InfoLiteral': self.credit_note and 'V1.0: Nota de Ajuste de Documento Soporte de Pago de Nómina Electrónica' or 'V1.0: Documento Soporte de Pago de Nómina Electrónica',
-            'Ambiente': ambiente,
-            'TipoXML': tipoXML,
-            'CUNE': CUNE,
-            'FechaGen': fechaGen,
-            'HoraGen': horaGen,
-            'PeriodoNomina': periodoNomina,
-            'TipoMoneda': TipoMoneda
+            'Ambiente' : ambiente,
+            'TipoXML' : tipoXML,
+            'CUNE' : CUNE,
+            'FechaGen' : fechaGen,
+            'HoraGen' : horaGen,
+            'PeriodoNomina' : periodoNomina,
+            'TipoMoneda' : TipoMoneda
         }
 
         return informacion_general
@@ -942,21 +877,21 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         softwareID = str(self.company_id.software_identification_code_payroll)
         softwareSC = str(self._generate_software_security_code())
         proveedor_xml = payslip_proveedor_xml_template % {
-            'NIT': nit,
-            'DV': dv,
-            'SoftwareID': softwareID,
-            'SoftwareSC': softwareSC
+            'NIT' : nit,
+            'DV' : dv,
+            'SoftwareID' : softwareID,
+            'SoftwareSC' : softwareSC
         }
         return proveedor_xml
 
     def generate_payslip_lugar_generacion_xml(self, payslip_lugar_generacion_xml_template):
         pais = str(self.company_id.country_id.code)
-        departamentoEstado = str(self.company_id.state_id.l10n_co_edi_code)
+        departamentoEstado = str(self.employee_id.company.state_id.l10n_co_edi_code)
         municipioCiudad = str(self.company_id.partner_id.xcity.code)
         lugar_generacion_xml = payslip_lugar_generacion_xml_template % {
-            'Pais': pais,
-            'DepartamentoEstado': departamentoEstado,
-            'MunicipioCiudad': municipioCiudad,
+            'Pais' : pais,
+            'DepartamentoEstado' : departamentoEstado,
+            'MunicipioCiudad' : municipioCiudad,
         }
         return lugar_generacion_xml
 
@@ -983,63 +918,53 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         tiempoLaborado = str(self._get_work_time())
         fechaGen = str(self._get_date_gen())
         payslip_periodo = payslip_periodo_template % {
-            'FechaIngreso': fechaIngreso,
-            'FechaLiquidacionInicio': fechaLiquidacionInicio,
-            'FechaRetiro': FechaRetiro,
-            'FechaLiquidacionFin': fechaLiquidacionFin,
-            'TiempoLaborado': tiempoLaborado,
-            'FechaGen': fechaGen
+            'FechaIngreso' : fechaIngreso,
+            'FechaLiquidacionInicio' : fechaLiquidacionInicio,
+            'FechaRetiro' : FechaRetiro,
+            'FechaLiquidacionFin' : fechaLiquidacionFin,
+            'TiempoLaborado' : tiempoLaborado,
+            'FechaGen' : fechaGen
         }
         return payslip_periodo
 
     def generate_payslip_main(self, payslip_main_template):
-        periodo = self.generate_payslip_periodo(
-            self.payslip_periodo_template())
-        numeroSecuenciaXML = self.generate_payslip_numero_secuencia_xml(
-            self.payslip_numero_secuencia_xml_template())
-        lugarGeneracionXML = self.generate_payslip_lugar_generacion_xml(
-            self.payslip_lugar_generacion_xml_template())
-        proveedorXML = self.generate_payslip_proveedor_xml(
-            self.payslip_proveedor_xml_template())
-        codigoQR = str(self._get_QRCode(
-            self._get_date_gen(), self._get_time_colombia()))
-        informacionGeneral = self.generate_payslip_informacion_general(
-            self.payslip_informacion_general_template())
-        empleador = self.generate_payslip_empleador(
-            self.payslip_empleador_template())
-        trabajador = self.generate_payslip_trabajador(
-            self.payslip_trabajador_template())
+        periodo = self.generate_payslip_periodo(self.payslip_periodo_template())
+        numeroSecuenciaXML = self.generate_payslip_numero_secuencia_xml(self.payslip_numero_secuencia_xml_template())
+        lugarGeneracionXML = self.generate_payslip_lugar_generacion_xml(self.payslip_lugar_generacion_xml_template())
+        proveedorXML = self.generate_payslip_proveedor_xml(self.payslip_proveedor_xml_template())
+        codigoQR = str(self._get_QRCode(self._get_date_gen(), self._get_time_colombia()))
+        informacionGeneral = self.generate_payslip_informacion_general(self.payslip_informacion_general_template())
+        empleador = self.generate_payslip_empleador(self.payslip_empleador_template())
+        trabajador = self.generate_payslip_trabajador(self.payslip_trabajador_template())
         metodo = str(self._get_metodo())
         fechaPago = str(self._get_date_gen())
         devengados = self.generate_payslip_devengados()
         deducciones = self.generate_payslip_deducciones()
         devengadosTotal = self._devengados_second_decimal()
         deduccionesTotal = self._deducciones_second_decimal()
-        CUNE = str(self._generate_CUNE(
-            self._get_date_gen(), self._get_time_colombia()))
-        comprobanteTotal = self._complements_second_decimal(
-            (self._get_devengos() - self._get_deducciones()))
+        CUNE = str(self._generate_CUNE(self._get_date_gen(), self._get_time_colombia()))
+        comprobanteTotal = self._complements_second_decimal((self._get_devengos() - self._get_deducciones()))
         payslip = payslip_main_template % {
             'NumeroPred': self.payslip_refunded_id.number,
             'CUNEPred': self.payslip_refunded_id.cune,
             'FechaGenPred': self.payslip_refunded_id.date_send_dian,
-            'TipoNota': '<TipoNota>%(type_note)s</TipoNota>' % {"type_note": self.note_type},
+            'TipoNota': '<TipoNota>%(type_note)s</TipoNota>'%{"type_note": self.note_type},
             'XmlNodo': self.credit_note and 'NominaIndividualDeAjuste' or 'NominaIndividual',
-            'Periodo': periodo,
-            'NumeroSecuenciaXML': numeroSecuenciaXML,
-            'LugarGeneracionXML': lugarGeneracionXML,
-            'ProveedorXML': proveedorXML,
-            'CodigoQR': codigoQR,
-            'InformacionGeneral': informacionGeneral,
-            'Empleador': empleador,
-            'Trabajador': trabajador,
-            'Metodo': metodo,
-            'FechaPago': fechaPago,
-            'Devengados': devengados,
-            'Deducciones': deducciones,
-            'DevengadosTotal': devengadosTotal,
-            'DeduccionesTotal': deduccionesTotal,
-            'ComprobanteTotal': comprobanteTotal,
+            'Periodo' : periodo,
+            'NumeroSecuenciaXML' : numeroSecuenciaXML,
+            'LugarGeneracionXML' : lugarGeneracionXML,
+            'ProveedorXML' : proveedorXML,
+            'CodigoQR' : codigoQR,
+            'InformacionGeneral' : informacionGeneral,
+            'Empleador' : empleador,
+            'Trabajador' : trabajador,
+            'Metodo' : metodo,
+            'FechaPago' : fechaPago,
+            'Devengados' : devengados,
+            'Deducciones' : deducciones,
+            'DevengadosTotal' : devengadosTotal,
+            'DeduccionesTotal' : deduccionesTotal,
+            'ComprobanteTotal' : comprobanteTotal,
             'CUNE': CUNE
         }
         return payslip
@@ -1095,23 +1020,20 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
     def _get_currency(self):
         currency = self.company_id.currency_id.name
         return currency
-
     def _get_metodo(self):
         metodo = self.payment_method
         return metodo
 
     def _get_deducciones(self):
         total_deducciones = 0
-        lines_deducciones = self.line_ids.filtered(
-            lambda l: l.salary_rule_id.rule_type == 'deducciones')
+        lines_deducciones = self.line_ids.filtered(lambda l: l.salary_rule_id.rule_type == 'deducciones')
         for line in lines_deducciones:
             total_deducciones += line.total
         return total_deducciones
 
     def _get_devengos(self):
         total_devengos = 0
-        lines_devengos = self.line_ids.filtered(
-            lambda l: l.salary_rule_id.rule_type == 'devengos')
+        lines_devengos = self.line_ids.filtered(lambda l: l.salary_rule_id.rule_type == 'devengos')
         for line in lines_devengos:
             total_devengos += line.total
         return total_devengos
@@ -1126,8 +1048,9 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
             zf.writestr(filename, data_xml_document, compress_type=compression)
         finally:
             zf.close()
+        
 
-        data_xml = open(zip_file, 'rb')
+        data_xml = open(zip_file,'rb')
         data_xml = data_xml.read()
         contenido_data_xml_b64 = base64.b64encode(data_xml)
         contenido_data_xml_b64 = contenido_data_xml_b64.decode()
@@ -1137,58 +1060,40 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         software_identification_code = self.company_id.software_identification_code_payroll
         software_pin = self.company_id.software_pin_payroll
         NroDocumento = self.number
-        print(software_identification_code, "SOFT", software_pin, "PIN", NroDocumento, "POR REVISAR")
-        software_security_code = hashlib.sha384(
-            (software_identification_code + software_pin + NroDocumento).encode())
+        software_security_code = hashlib.sha384((software_identification_code + software_pin + NroDocumento).encode())
         software_security_code = software_security_code.hexdigest()
         return software_security_code
 
     def _complements_second_decimal(self, amount):
-        amount_dec = (amount - int(amount)) * 100.0
-        _logger.info("amount_dec__________________________________________________")
-        _logger.info(amount_dec)
+        amount_dec = round(((amount - int(amount)) * 100.0),2)
         amount_int = int(amount_dec)
-        if amount_int % 10 == 0:
+        if  amount_int % 10 == 0:
             amount = str(amount) + '0'
         else:
             amount = str(amount)
         return amount
 
     def _devengados_second_decimal(self):
-        dev_second_decimal = self._complements_second_decimal(
-            self._get_devengos())
+        dev_second_decimal = self._complements_second_decimal(self._get_devengos())
         return dev_second_decimal
 
     def _deducciones_second_decimal(self):
-        ded_second_decimal = self._complements_second_decimal(
-            self._get_deducciones())
+        ded_second_decimal = self._complements_second_decimal(self._get_deducciones())
         return ded_second_decimal
 
     def _generate_CUNE(self, gen_date, gen_hours):
-        
         NumNE = self.number
         FecNE = str(gen_date)
-        HorNE = str(gen_hours).replace("-05:00", "")
-        ValDev = self.credit_note and self.note_type == "2" and '0.00' or self._devengados_second_decimal()
-        _logger.info("w"*100)
-        _logger.info(ValDev)
-        ValDed = self.credit_note and self.note_type == "2" and '0.00' or self._deducciones_second_decimal()
-        _logger.info(ValDed)
-        ValTolNE = self.credit_note and self.note_type == "2" and '0.00' or self._complements_second_decimal(
-            (self._get_devengos() - self._get_deducciones()))   
-        _logger.info("este es valtolne")
-        _logger.info(ValTolNE)
+        HorNE = str(gen_hours).replace("-05:00","")
+        ValDev = self.credit_note and '0.00' or self._devengados_second_decimal()
+        ValDed = self.credit_note and '0.00' or self._deducciones_second_decimal()
+        ValTolNE = self.credit_note and '0.00' or self._complements_second_decimal((self._get_devengos() - self._get_deducciones()))
         NitNE = str(self.company_id.partner_id.xidentification)
-        DocEmp = self.credit_note and self.note_type == "2" and '0' or str(
-            self.employee_id.id_document_payroll)
-        _logger.info(DocEmp)
+        DocEmp = self.credit_note and '0' or str(self.employee_id.id_document_payroll)
         TipoXML = self.credit_note and '103' or '102'
-        _logger.info(TipoXML)
         SoftwarePin = self.company_id.software_pin_payroll
         TipAmb = str(self.company_id.is_test)
-        CUNE = NumNE+FecNE+HorNE+"-05:00" + \
-            str(ValDev)+str(ValDed)+ValTolNE+NitNE + \
-            DocEmp+TipoXML+SoftwarePin+TipAmb
+        CUNE = NumNE+FecNE+HorNE+"-05:00"+str(ValDev)+str(ValDed)+ValTolNE+NitNE+DocEmp+TipoXML+SoftwarePin+TipAmb
         hash_CUNE = hashlib.sha384(CUNE.encode()).hexdigest()
 
         return hash_CUNE
@@ -1249,6 +1154,7 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                                         </soap:Body>
                                     </soap:Envelope>"""
         return template_GetStatusZip
+
 
     def template_GetStatusZip_xml(self):
         template_GetStatusZip = """<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wcf="http://wcf.dian.colombia">
@@ -1346,6 +1252,8 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                                     </soap:Envelope>"""
         return template_SendNominaSync
 
+    
+
     def template_SendNominaSync_xml(self):
         template_SendNominaSync = """<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wcf="http://wcf.dian.colombia">
                                         <soap:Header xmlns:wsa="http://www.w3.org/2005/08/addressing">
@@ -1395,6 +1303,8 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                                     </soap:Envelope>"""
         return template_SendNominaSync
 
+
+
     def generate_datetime_timestamp(self):
         fmt = "%Y-%m-%dT%H:%M:%S.%f"
         now_utc = datetime.now(timezone('UTC'))
@@ -1403,39 +1313,38 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         Created = now_bogota.strftime(fmt)[:-3]+'Z'
         now_bogota = now_bogota + timedelta(minutes=5)
         Expires = now_bogota.strftime(fmt)[:-3]+'Z'
-        timestamp = {'Created': Created,
-                     'Expires': Expires
-                     }
+        timestamp = {'Created' : Created,
+            'Expires' : Expires
+        }
         return timestamp
 
     def generate_GetStatusZip_send_xml(self, template_getstatus_send_data_xml, identifier, Created, Expires,  Certificate,
-                                       identifierSecurityToken, identifierTo, trackId):
+        identifierSecurityToken, identifierTo, trackId):
         data_getstatus_send_xml = template_getstatus_send_data_xml % {
-            'identifier': identifier,
-            'Created': Created,
-            'Expires': Expires,
-            'Certificate': Certificate,
-            'identifierSecurityToken': identifierSecurityToken,
-            'identifierTo': identifierTo,
-            'trackId': trackId
-        }
+                        'identifier' : identifier,
+                        'Created' : Created,
+                        'Expires' : Expires,
+                        'Certificate' : Certificate,
+                        'identifierSecurityToken' : identifierSecurityToken,
+                        'identifierTo' : identifierTo,
+                        'trackId': trackId
+                    }
         return data_getstatus_send_xml
 
     def generate_SendTestSetAsync_send_xml(self, template_getstatus_send_data_xml, identifier, Created, Expires,  Certificate,
-                                           identifierSecurityToken, identifierTo, contentFile, fileName, testSetId):
+        identifierSecurityToken, identifierTo, contentFile, fileName, testSetId):
         data_getstatus_send_xml = template_getstatus_send_data_xml % {
-            'identifier': identifier,
-            'Created': Created,
-            'Expires': Expires,
-            'Certificate': Certificate,
-            'identifierSecurityToken': identifierSecurityToken,
-            'identifierTo': identifierTo,
-            'fileName': fileName,
-            'contentFile': contentFile,
-            'testSetId': testSetId
-        }
+                        'identifier' : identifier,
+                        'Created' : Created,
+                        'Expires' : Expires,
+                        'Certificate' : Certificate,
+                        'identifierSecurityToken' : identifierSecurityToken,
+                        'identifierTo' : identifierTo,
+                        'fileName': fileName,
+                        'contentFile' : contentFile,
+                        'testSetId': testSetId
+                    }
         return data_getstatus_send_xml
-
     def generate_digestvalue_to(self, elementTo):
         elementTo = etree.tostring(etree.fromstring(elementTo), method="c14n")
         elementTo_sha256 = hashlib.new('sha256', elementTo)
@@ -1445,28 +1354,25 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         return elementTo_base
 
     def generate_SignatureValue_GetStatus(self, document_repository, password, data_xml_SignedInfo_generate, archivo_pem, archivo_certificado):
-        data_xml_SignatureValue_c14n = etree.tostring(
-            etree.fromstring(data_xml_SignedInfo_generate), method="c14n")
+        data_xml_SignatureValue_c14n = etree.tostring(etree.fromstring(data_xml_SignedInfo_generate), method="c14n")
         archivo_key = document_repository+'/'+archivo_certificado
         try:
             key = crypto.load_pkcs12(open(archivo_key, 'rb').read(), password)
         except Exception as ex:
             raise ex
         try:
-            signature = crypto.sign(
-                key.get_privatekey(), data_xml_SignatureValue_c14n, 'sha256')
+            signature = crypto.sign(key.get_privatekey(), data_xml_SignatureValue_c14n, 'sha256')
         except Exception as ex:
             raise ex
         SignatureValue = base64.b64encode(signature).decode()
         archivo_pem = document_repository+'/'+archivo_pem
-        pem = crypto.load_certificate(
-            crypto.FILETYPE_PEM, open(archivo_pem, 'rb').read())
+        pem = crypto.load_certificate(crypto.FILETYPE_PEM, open(archivo_pem, 'rb').read())
         try:
-            validacion = crypto.verify(
-                pem, signature, data_xml_SignatureValue_c14n, 'sha256')
+            validacion = crypto.verify(pem, signature, data_xml_SignatureValue_c14n, 'sha256')
         except:
             raise "Firma para el GestStatus no fué validada exitosamente"
         return SignatureValue
+
 
     def _calculate_integral(self):
         for record in self:
@@ -1477,9 +1383,10 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                 if total_in_payslip > total_in_company:
                     record.it_is_integral = True
 
+
     def action_payslip_done(self):
         res = super(HrPayslip, self).action_payslip_done()
-        if self.adj_method == 'adjustment':
+        if not self.number and self.adj_method == 'adjustment':
             sequence_code = ''
             IPC = self.env['ir.config_parameter'].sudo()
             adj_sequence = int(IPC.get_param('l10n_co_payroll.adj_sequence'))
@@ -1489,7 +1396,6 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                 self.number = self.env['ir.sequence'].next_by_code(sequence_code)
         return res
 
-    @api.multi
     def _l10n_co_check(self):
         dian_constants = self._get_dian_constants()
         identifier = uuid.uuid4()
@@ -1504,59 +1410,51 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
 
         if self.company_id.is_test == "2":
             getstatus_xml_send = self.generate_GetStatusZip_send_xml(self.template_GetStatusZip_xml(), identifier, Created, Expires,
-                                                                     cer, identifierSecurityToken, identifierTo, self.trackid)
+                    cer, identifierSecurityToken, identifierTo, self.trackid)
             getstatus_xml_send = self.sign_request_post(getstatus_xml_send)
-            response = requests.post(
-                url, data=getstatus_xml_send, headers=headers)
+            response = requests.post(url, data=getstatus_xml_send, headers=headers)
             if response.status_code == 200:
                 response_dict = xmltodict.parse(response.content)
-                dian_response_dict = response_dict.get("s:Envelope", {}).get("s:Body", {}).get(
-                    "GetStatusZipResponse", {}).get("GetStatusZipResult", {}).get("b:DianResponse", {})
+                dian_response_dict = response_dict.get("s:Envelope", {}).get("s:Body", {}).get("GetStatusZipResponse", {}).get("GetStatusZipResult", {}).get("b:DianResponse", {})
                 if dian_response_dict.get("b:IsValid", "false") == "true":
                     self.l10n_co_dian_status = "valid"
                 else:
-                    self.message_post(body=dian_response_dict.get(
-                        "b:StatusDescription", ''))
+                    self.message_post(body=dian_response_dict.get("b:StatusDescription", ''))
         else:
             getstatus_xml_send = self.generate_GetStatusZip_send_xml(self.template_GetStatus_xml(), identifier, Created, Expires,
-                                                                     cer, identifierSecurityToken, identifierTo, self.trackid)
+                    cer, identifierSecurityToken, identifierTo, self.trackid)
             getstatus_xml_send = self.sign_request_post(getstatus_xml_send)
-            response = requests.post(
-                url, data=getstatus_xml_send, headers=headers)
+            response = requests.post(url, data=getstatus_xml_send, headers=headers)
             if response.status_code == 200:
                 response_dict = xmltodict.parse(response.content)
                 _logger.info(":"*600)
-                _logger.info(response_dict.get(
-                    "s:Envelope", {}).get("s:Body", {}))
-                dian_response_dict = response_dict.get("s:Envelope", {}).get(
-                    "s:Body", {}).get("GetStatusResponse", {}).get("GetStatusResult", {})
+                _logger.info(response_dict.get("s:Envelope", {}).get("s:Body", {}))
+                dian_response_dict = response_dict.get("s:Envelope", {}).get("s:Body", {}).get("GetStatusResponse", {}).get("GetStatusResult", {})
                 if dian_response_dict.get("b:IsValid", "false") == "true":
                     self.l10n_co_dian_status = "valid"
                 else:
                     msg = dian_response_dict.get("b:StatusDescription", '')
                     for error in dian_response_dict.get("b:ErrorMessage", {}).get("c:string", []):
-                        pass
-                    print(dian_response_dict)    
-                    self.message_post(body=dian_response_dict)
+                        msg += "<p>%s</p>"%(error)
+                    self.message_post(body=msg)
 
-    @api.multi
     def l10n_co_check_trackid_status(self):
-        print("Gavitest"*200)
         for record in self:
             if record.l10n_co_dian_status in ('none', 'undefined') and record.trackid:
                 record._l10n_co_check()
 
-    @api.multi
+
     def _create_payslip_xml_template(self):
         '''Creates and returns a dictionnary containing 'cfdi' if the cfdi is well created, 'error' otherwise.
         '''
         self.ensure_one()
         qweb = self.env['ir.qweb']
         values = self._l10n_co_create_values()
-        nomina = qweb.render(PAYSLIP_TEMPLATE, values=values)
+        # self.env.ref('l10n_co_payroll.payslip_template').render(richard_payslip.ids)
+        nomina = qweb._render(PAYSLIP_TEMPLATE, values=values)
         return nomina
 
-    @api.multi
+
     def _l10n_co_create_values(self):
         '''Create the values to fill the CFDI template.
         '''
@@ -1586,49 +1484,44 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         :param cfdi: The cfdi as string
         :return: An objectified tree
         '''
-        # TODO helper which is not of too much help and should be removed
+        #TODO helper which is not of too much help and should be removed
         self.ensure_one()
         if cfdi is None and self.l10n_mx_edi_cfdi:
             cfdi = base64.decodestring(self.l10n_mx_edi_cfdi)
         return fromstring(cfdi) if cfdi else None
-
-    @api.multi
+         
     def _generate_CertDigestDigestValue(self, digital_certificate, password, document_repository, archivo_certificado):
-        archivo_key = document_repository + '/'+archivo_certificado
+        archivo_key = (document_repository or '') +'/'+ (archivo_certificado or '')
         key = crypto.load_pkcs12(open(archivo_key, 'rb').read(), password)
-        certificate = hashlib.sha256(crypto.dump_certificate(
-            crypto.FILETYPE_ASN1, key.get_certificate()))
+        certificate = hashlib.sha256(crypto.dump_certificate(crypto.FILETYPE_ASN1, key.get_certificate()))
         CertDigestDigestValue = base64.b64encode(certificate.digest())
         CertDigestDigestValue = CertDigestDigestValue.decode()
         return CertDigestDigestValue
-
-    def _get_partner_fiscal_responsability_code(self, partner_id):
+    
+    def _get_partner_fiscal_responsability_code(self,partner_id):
         rec_partner = self.env['res.partner'].search([('id', '=', partner_id)])
         fiscal_responsability_codes = ''
         if rec_partner:
             for fiscal_responsability in rec_partner.fiscal_responsability_ids:
-                fiscal_responsability_codes += ';' + \
-                    fiscal_responsability.code if fiscal_responsability_codes else fiscal_responsability.code
+                fiscal_responsability_codes += ';' + fiscal_responsability.code if fiscal_responsability_codes else fiscal_responsability.code
         return fiscal_responsability_codes
-
+    
     def _replace_character_especial(self, constant):
         if constant:
-            constant = constant.replace('&', '&amp;')
-            constant = constant.replace('<', '&lt;')
-            constant = constant.replace('>', '&gt;')
-            constant = constant.replace('"', '&quot;')
-            constant = constant.replace("'", '&apos;')
+            constant = constant.replace('&','&amp;')
+            constant = constant.replace('<','&lt;')
+            constant = constant.replace('>','&gt;')
+            constant = constant.replace('"','&quot;')
+            constant = constant.replace("'",'&apos;')
         return constant
 
-    @api.multi
     def _generate_signature_signingtime(self):
         fmt = "%Y-%m-%dT%H:%M:%S"
         now_utc = datetime.now(timezone('UTC'))
         now_bogota = now_utc.astimezone(timezone('America/Bogota'))
         data_xml_SigningTime = now_bogota.strftime(fmt)
         return data_xml_SigningTime
-
-    @api.multi
+    
     def _generate_signature_politics(self, document_repository):
         # Generar la referencia 2 que consiste en obtener keyvalue desde el documento de politica
         # aplicando el algoritmo SHA1 antes del 20 de septimebre de 2016 y sha256 después  de esa
@@ -1637,14 +1530,13 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         #
         data_xml_politics = 'dMoMvtcG5aIzgYo0tIsSQeVJBDnUnfSOfBpxXrmor0Y='
         return data_xml_politics
-
+    
     @api.model
     def _generate_signature_ref0(self, data_xml_document, document_repository, password):
         # 1er paso. Generar la referencia 0 que consiste en obtener keyvalue desde todo el xml del
         #           documento electronico aplicando el algoritmo SHA256 y convirtiendolo a base64
         template_basic_data_fe_xml = bytes(data_xml_document, 'utf-8')
-        template_basic_data_fe_xml = etree.tostring(etree.fromstring(
-            template_basic_data_fe_xml), method="c14n", exclusive=False, with_comments=False, inclusive_ns_prefixes=None)
+        template_basic_data_fe_xml = etree.tostring(etree.fromstring(template_basic_data_fe_xml), method="c14n", exclusive=False,with_comments=False,inclusive_ns_prefixes=None)
         data_xml_sha256 = hashlib.new('sha512', template_basic_data_fe_xml)
         data_xml_digest = data_xml_sha256.digest()
         data_xml_signature_ref_zero = base64.b64encode(data_xml_digest)
@@ -1659,25 +1551,25 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         identifierkeyinfo = uuid.uuid4()
         data_constants_document['identifierkeyinfo'] = str(identifierkeyinfo)
         return data_constants_document
-
+    
     @api.model
     def _update_signature(self, template_signature_data_xml, data_xml_signature_ref_zero, data_public_certificate_base,
-                          data_xml_keyinfo_base, data_xml_politics,
-                          data_xml_SignedProperties_base, data_xml_SigningTime, dian_constants,
-                          data_xml_SignatureValue, data_constants_document):
-        data_xml_signature = template_signature_data_xml % {'data_xml_signature_ref_zero': data_xml_signature_ref_zero,
-                                                            'data_public_certificate_base': data_public_certificate_base,
-                                                            'data_xml_keyinfo_base': data_xml_keyinfo_base,
-                                                            'data_xml_politics': data_xml_politics,
-                                                            'data_xml_SignedProperties_base': data_xml_SignedProperties_base,
-                                                            'data_xml_SigningTime': data_xml_SigningTime,
-                                                            'CertDigestDigestValue': dian_constants['CertDigestDigestValue'],
-                                                            'IssuerName': dian_constants['IssuerName'],
-                                                            'SerialNumber': dian_constants['SerialNumber'],
-                                                            'SignatureValue': data_xml_SignatureValue,
-                                                            'identifier': data_constants_document['identifier'],
-                                                            'identifierkeyinfo': data_constants_document['identifierkeyinfo'],
-                                                            }
+                                data_xml_keyinfo_base, data_xml_politics,
+                                data_xml_SignedProperties_base, data_xml_SigningTime, dian_constants,
+                                data_xml_SignatureValue, data_constants_document):
+        data_xml_signature = template_signature_data_xml % {'data_xml_signature_ref_zero' : data_xml_signature_ref_zero,
+                                        'data_public_certificate_base' : data_public_certificate_base,
+                                        'data_xml_keyinfo_base' : data_xml_keyinfo_base,
+                                        'data_xml_politics' : data_xml_politics,
+                                        'data_xml_SignedProperties_base' : data_xml_SignedProperties_base,
+                                        'data_xml_SigningTime' : data_xml_SigningTime,
+                                        'CertDigestDigestValue' : dian_constants['CertDigestDigestValue'],
+                                        'IssuerName' : dian_constants['IssuerName'],
+                                        'SerialNumber' : dian_constants['SerialNumber'],
+                                        'SignatureValue' : data_xml_SignatureValue,
+                                        'identifier' : data_constants_document['identifier'],
+                                        'identifierkeyinfo' : data_constants_document['identifierkeyinfo'],
+                                        }
         return data_xml_signature
 
     @api.model
@@ -1692,31 +1584,26 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         #    Generar certificado publico para la firma del documento en el elemento keyinfo
         data_public_certificate_base = dian_constants['Certificate']
         #    Generar clave de politica de firma para la firma del documento (SigPolicyHash)
-        data_xml_politics = self._generate_signature_politics(
-            dian_constants['document_repository'])
+        data_xml_politics = self._generate_signature_politics(dian_constants['document_repository'])
         #    Obtener la hora de Colombia desde la hora del pc
         data_xml_SigningTime = self._generate_signature_signingtime()
         #    Generar clave de referencia 0 para la firma del documento (referencia ref0)
         #    1ra. Actualización de firma ref0 (leer todo el xml sin firma)
-        data_xml_signature_ref_zero = self._generate_signature_ref0(
-            data_xml_document, dian_constants['document_repository'], dian_constants['CertificateKey'])
+        data_xml_signature_ref_zero = self._generate_signature_ref0(data_xml_document, dian_constants['document_repository'], dian_constants['CertificateKey'])
         data_xml_signature = self._update_signature(template_signature_data_xml,
-                                                    data_xml_signature_ref_zero, data_public_certificate_base,
-                                                    data_xml_keyinfo_base, data_xml_politics,
-                                                    data_xml_SignedProperties_base, data_xml_SigningTime,
-                                                    dian_constants, data_xml_SignatureValue, data_constants_document)
+                                data_xml_signature_ref_zero, data_public_certificate_base,
+                                data_xml_keyinfo_base, data_xml_politics,
+                                data_xml_SignedProperties_base, data_xml_SigningTime,
+                                dian_constants, data_xml_SignatureValue, data_constants_document)
         parser = etree.XMLParser(remove_blank_text=True)
-        data_xml_signature = etree.tostring(
-            etree.XML(data_xml_signature, parser=parser))
+        data_xml_signature = etree.tostring(etree.XML(data_xml_signature, parser=parser))
         data_xml_signature = data_xml_signature.decode()
         #    Actualiza Keyinfo
         KeyInfo = etree.fromstring(data_xml_signature)
         KeyInfo = etree.tostring(KeyInfo[2])
         KeyInfo = KeyInfo.decode()
-        data_xml_keyinfo_base = self._generate_signature_ref1(
-            KeyInfo, dian_constants['document_repository'], dian_constants['CertificateKey'])
-        data_xml_signature = data_xml_signature.replace(
-            "<ds:DigestValue/>", "<ds:DigestValue>%s</ds:DigestValue>" % data_xml_keyinfo_base, 1)
+        data_xml_keyinfo_base = self._generate_signature_ref1(KeyInfo, dian_constants['document_repository'], dian_constants['CertificateKey'])
+        data_xml_signature = data_xml_signature.replace("<ds:DigestValue/>","<ds:DigestValue>%s</ds:DigestValue>" % data_xml_keyinfo_base, 1)
         #    Actualiza SignedProperties
         SignedProperties = etree.fromstring(data_xml_signature)
         SignedProperties = etree.tostring(SignedProperties[3])
@@ -1725,21 +1612,17 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         SignedProperties = etree.fromstring(SignedProperties)
         SignedProperties = etree.tostring(SignedProperties[0])
         SignedProperties = SignedProperties.decode()
-        data_xml_SignedProperties_base = self._generate_signature_ref2(
-            SignedProperties)
-        data_xml_signature = data_xml_signature.replace(
-            "<ds:DigestValue/>", "<ds:DigestValue>%s</ds:DigestValue>" % data_xml_SignedProperties_base, 1)
+        data_xml_SignedProperties_base = self._generate_signature_ref2(SignedProperties)
+        data_xml_signature = data_xml_signature.replace("<ds:DigestValue/>","<ds:DigestValue>%s</ds:DigestValue>" % data_xml_SignedProperties_base, 1)
         #    Actualiza Signeinfo
         Signedinfo = etree.fromstring(data_xml_signature)
         Signedinfo = etree.tostring(Signedinfo[0])
         Signedinfo = Signedinfo.decode()
-        data_xml_SignatureValue = self._generate_SignatureValue(
-            dian_constants['document_repository'], dian_constants['CertificateKey'], Signedinfo, dian_constants['archivo_pem'], dian_constants['archivo_certificado'])
+        data_xml_SignatureValue = self._generate_SignatureValue(dian_constants['document_repository'], dian_constants['CertificateKey'], Signedinfo, dian_constants['archivo_pem'], dian_constants['archivo_certificado'])
         SignatureValue = etree.fromstring(data_xml_signature)
         SignatureValue = etree.tostring(SignatureValue[1])
         SignatureValue = SignatureValue.decode()
-        data_xml_signature = data_xml_signature.replace(
-            '-sigvalue"/>', '-sigvalue">%s</ds:SignatureValue>' % data_xml_SignatureValue, 1)
+        data_xml_signature = data_xml_signature.replace('-sigvalue"/>','-sigvalue">%s</ds:SignatureValue>' % data_xml_SignatureValue, 1)
         return data_xml_signature
 
     @api.model
@@ -1747,75 +1630,47 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         company = self.env.user.company_id
         partner = company.partner_id
         dian_constants = {}
-        # Ruta en donde se almacenaran los archivos que utiliza y genera la Facturación Electrónica
-        dian_constants['document_repository'] = company.document_repository
-        # Identificador del software en estado en pruebas o activo
-        dian_constants['Username'] = company.software_identification_code_payroll
-        # Es el resultado de aplicar la función de resumen SHA-256 sobre la contraseña del software en estado en pruebas o activo
-        dian_constants['Password'] = hashlib.new(
-            'sha256', company.password_environment.encode()).hexdigest()
-        # Identificador de pais
-        dian_constants['IdentificationCode'] = partner.country_id.code
-        # ID Proveedor de software o cliente si es software propio
-        dian_constants['ProviderID'] = partner.xidentification if partner.xidentification else ''
-        # ID del software a utilizar          # Código de seguridad del software: (hashlib.new('sha384', str(self.company_id.software_id) + str(self.company_id.software_pin)))
-        dian_constants['SoftwareID'] = company.software_identification_code_payroll
+        dian_constants['document_repository'] = company.document_repository                             # Ruta en donde se almacenaran los archivos que utiliza y genera la Facturación Electrónica
+        dian_constants['Username'] = company.software_identification_code_payroll                               # Identificador del software en estado en pruebas o activo
+        dian_constants['Password'] = hashlib.new('sha256',company.password_environment.encode()).hexdigest()     # Es el resultado de aplicar la función de resumen SHA-256 sobre la contraseña del software en estado en pruebas o activo
+        dian_constants['IdentificationCode'] = partner.country_id.code                                  # Identificador de pais
+        dian_constants['ProviderID'] = partner.xidentification     if partner.xidentification else ''   # ID Proveedor de software o cliente si es software propio
+        dian_constants['SoftwareID'] = company.software_identification_code_payroll                             # ID del software a utilizar          # Código de seguridad del software: (hashlib.new('sha384', str(self.company_id.software_id) + str(self.company_id.software_pin)))
         dian_constants['PINSoftware'] = company.software_pin_payroll
         dian_constants['SeedCode'] = company.seed_code
-        # Versión base de UBL usada. Debe marcar UBL 2.0
-        dian_constants['UBLVersionID'] = 'UBL 2.1'
-        # Versión del Formato: Indicar versión del documento. Debe usarse "DIAN 1.0"
-        dian_constants['ProfileID'] = 'DIAN 2.1'
+        dian_constants['UBLVersionID'] = 'UBL 2.1'                                                      # Versión base de UBL usada. Debe marcar UBL 2.0
+        dian_constants['ProfileID'] = 'DIAN 2.1'                                                         # Versión del Formato: Indicar versión del documento. Debe usarse "DIAN 1.0"
         dian_constants['CustomizationID'] = company.operation_type
-        # 1 = produccción 2 = prueba
-        dian_constants['ProfileExecutionID'] = company.is_test
-        # Persona natural o jurídica (persona natural, jurídica, gran contribuyente, otros)
-        dian_constants['SupplierAdditionalAccountID'] = '1' if partner.is_company else '2'
-        # Identificador fiscal: En Colombia, el NIT
-        dian_constants['SupplierID'] = partner.xidentification if partner.xidentification else ''
+        dian_constants['ProfileExecutionID'] = company.is_test                                          # 1 = produccción 2 = prueba
+        dian_constants['SupplierAdditionalAccountID'] = '1' if partner.is_company else '2'              # Persona natural o jurídica (persona natural, jurídica, gran contribuyente, otros)
+        dian_constants['SupplierID'] = partner.xidentification if partner.xidentification else ''       # Identificador fiscal: En Colombia, el NIT
         dian_constants['SupplierSchemeID'] = partner.doctype
-        dian_constants['SupplierPartyName'] = self._replace_character_especial(
-            partner.name)            # Nombre Comercial
-        # Ciudad o departamento (No requerido)
-        dian_constants['SupplierDepartment'] = partner.state_id.name
-        # Municipio tabla 6.4.3 res.country.state.city
-        dian_constants['SupplierCityCode'] = partner.xcity.code
-        # Municipio tabla 6.4.3 res.country.state.city
-        dian_constants['SupplierCityName'] = partner.xcity.name
-        # Ciudad o departamento tabla 6.4.2 res.country.state
-        dian_constants['SupplierCountrySubentity'] = partner.state_id.name
-        # Ciudad o departamento tabla 6.4.2 res.country.state
-        dian_constants['SupplierCountrySubentityCode'] = partner.xcity.code[0:2]
-        # País tabla 6.4.1 res.country
-        dian_constants['SupplierCountryCode'] = partner.country_id.code
-        # País tabla 6.4.1 res.country
-        dian_constants['SupplierCountryName'] = partner.country_id.name
-        # Calle
-        dian_constants['SupplierLine'] = partner.street
-        # Razón Social: Obligatorio en caso de ser una persona jurídica. Razón social de la empresa
-        dian_constants['SupplierRegistrationName'] = company.trade_name
-        # Digito verificador del NIT
-        dian_constants['schemeID'] = partner.dv
+        dian_constants['SupplierPartyName'] = self._replace_character_especial(partner.name)            # Nombre Comercial
+        dian_constants['SupplierDepartment'] = partner.state_id.name                                    # Ciudad o departamento (No requerido)
+        dian_constants['SupplierCityCode'] = partner.xcity.code                                         # Municipio tabla 6.4.3 res.country.state.city
+        dian_constants['SupplierCityName'] = partner.xcity.name                                         # Municipio tabla 6.4.3 res.country.state.city
+        dian_constants['SupplierCountrySubentity'] = partner.state_id.name                              # Ciudad o departamento tabla 6.4.2 res.country.state
+        dian_constants['SupplierCountrySubentityCode'] = partner.xcity.code and partner.xcity.code[0:2]                          # Ciudad o departamento tabla 6.4.2 res.country.state
+        dian_constants['SupplierCountryCode'] = partner.country_id.code                                 # País tabla 6.4.1 res.country
+        dian_constants['SupplierCountryName'] = partner.country_id.name                                 # País tabla 6.4.1 res.country
+        dian_constants['SupplierLine'] = partner.street                                                 # Calle
+        dian_constants['SupplierRegistrationName'] = company.trade_name                                 # Razón Social: Obligatorio en caso de ser una persona jurídica. Razón social de la empresa
+        dian_constants['schemeID'] = partner.dv                                                         # Digito verificador del NIT
         dian_constants['SupplierElectronicMail'] = partner.email
-        # tabla 6.2.4 Régimes fiscal (listname) y 6.2.7 Responsabilidades fiscales
-        dian_constants['SupplierTaxLevelCode'] = self._get_partner_fiscal_responsability_code(
-            partner.id)
+        dian_constants['SupplierTaxLevelCode'] = self._get_partner_fiscal_responsability_code(partner.id)                  # tabla 6.2.4 Régimes fiscal (listname) y 6.2.7 Responsabilidades fiscales
         dian_constants['Certificate'] = company.digital_certificate
         dian_constants['NitSinDV'] = partner.xidentification
         dian_constants['CertificateKey'] = company.certificate_key
         dian_constants['archivo_pem'] = company.pem
         dian_constants['archivo_certificado'] = company.certificate
-        dian_constants['CertDigestDigestValue'] = self._generate_CertDigestDigestValue(
-            company.digital_certificate, dian_constants['CertificateKey'], dian_constants['document_repository'], dian_constants['archivo_certificado'])
-        # Nombre del proveedor del certificado
-        dian_constants['IssuerName'] = company.issuer_name
-        # Serial del certificado
-        dian_constants['SerialNumber'] = company.serial_number
+        dian_constants['CertDigestDigestValue'] = self._generate_CertDigestDigestValue(company.digital_certificate, dian_constants['CertificateKey'], dian_constants['document_repository'], dian_constants['archivo_certificado'])
+        dian_constants['IssuerName'] = company.issuer_name                                              # Nombre del proveedor del certificado
+        dian_constants['SerialNumber'] = company.serial_number                                          # Serial del certificado
         dian_constants['TaxSchemeID'] = partner.tribute_id.code
         dian_constants['TaxSchemeName'] = partner.tribute_id.name
         dian_constants['Currency'] = company.currency_id.id
         return dian_constants
-
+    
     def _template_signature_data_xml(self):
         template_signature_data_xml = """
                 <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="xmldsig-%(identifier)s">
@@ -1885,57 +1740,45 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
                     </ds:Object>
                 </ds:Signature>"""
         return template_signature_data_xml
-
-    @api.multi
+    
     def _generate_signature_ref1(self, data_xml_keyinfo_generate, document_repository, password):
         # Generar la referencia 1 que consiste en obtener keyvalue desde el keyinfo contenido
         # en el documento electrónico aplicando el algoritmo SHA256 y convirtiendolo a base64
-        data_xml_keyinfo_generate = etree.tostring(
-            etree.fromstring(data_xml_keyinfo_generate), method="c14n")
-        data_xml_keyinfo_sha256 = hashlib.new(
-            'sha512', data_xml_keyinfo_generate)
+        data_xml_keyinfo_generate = etree.tostring(etree.fromstring(data_xml_keyinfo_generate), method="c14n")
+        data_xml_keyinfo_sha256 = hashlib.new('sha512', data_xml_keyinfo_generate)
         data_xml_keyinfo_digest = data_xml_keyinfo_sha256.digest()
         data_xml_keyinfo_base = base64.b64encode(data_xml_keyinfo_digest)
         data_xml_keyinfo_base = data_xml_keyinfo_base.decode()
         return data_xml_keyinfo_base
-
-    @api.multi
+    
     def _generate_signature_ref2(self, data_xml_SignedProperties_generate):
         # Generar la referencia 2, se obtine desde el elemento SignedProperties que se
         # encuentra en la firma aplicando el algoritmo SHA256 y convirtiendolo a base64.
-        data_xml_SignedProperties_c14n = etree.tostring(
-            etree.fromstring(data_xml_SignedProperties_generate), method="c14n")
-        data_xml_SignedProperties_sha256 = hashlib.new(
-            'sha512', data_xml_SignedProperties_c14n)
+        data_xml_SignedProperties_c14n = etree.tostring(etree.fromstring(data_xml_SignedProperties_generate), method="c14n")
+        data_xml_SignedProperties_sha256 = hashlib.new('sha512', data_xml_SignedProperties_c14n)
         data_xml_SignedProperties_digest = data_xml_SignedProperties_sha256.digest()
-        data_xml_SignedProperties_base = base64.b64encode(
-            data_xml_SignedProperties_digest)
+        data_xml_SignedProperties_base = base64.b64encode(data_xml_SignedProperties_digest)
         data_xml_SignedProperties_base = data_xml_SignedProperties_base.decode()
         return data_xml_SignedProperties_base
-
-    @api.multi
+    
     def _generate_SignatureValue(self, document_repository, password, data_xml_SignedInfo_generate,
-                                 archivo_pem, archivo_certificado):
-        data_xml_SignatureValue_c14n = etree.tostring(etree.fromstring(
-            data_xml_SignedInfo_generate), method="c14n", exclusive=False, with_comments=False)
+            archivo_pem, archivo_certificado):
+        data_xml_SignatureValue_c14n = etree.tostring(etree.fromstring(data_xml_SignedInfo_generate), method="c14n", exclusive=False, with_comments=False)
         archivo_key = document_repository+'/'+archivo_certificado
         try:
             key = crypto.load_pkcs12(open(archivo_key, 'rb').read(), password)
         except Exception as ex:
             raise UserError(tools.ustr(ex))
         try:
-            signature = crypto.sign(
-                key.get_privatekey(), data_xml_SignatureValue_c14n, 'sha512')
+            signature = crypto.sign(key.get_privatekey(), data_xml_SignatureValue_c14n, 'sha512')
         except Exception as ex:
             raise UserError(tools.ustr(ex))
         SignatureValue = base64.b64encode(signature)
         SignatureValue = SignatureValue.decode()
         archivo_pem = document_repository+'/'+archivo_pem
-        pem = crypto.load_certificate(
-            crypto.FILETYPE_PEM, open(archivo_pem, 'rb').read())
+        pem = crypto.load_certificate(crypto.FILETYPE_PEM, open(archivo_pem, 'rb').read())
         try:
-            validacion = crypto.verify(
-                pem, signature, data_xml_SignatureValue_c14n, 'sha512')
+            validacion = crypto.verify(pem, signature, data_xml_SignatureValue_c14n, 'sha512')
         except:
             raise ValidationError("Firma no fué validada exitosamente")
         #serial = key.get_certificate().get_serial_number()
@@ -1943,33 +1786,31 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
 
     def generate_xmlsigned(self, tipoxml, xml, CerificadoEmpleadorB64, PinCertificadoB64, NitEmpleador):
         headers = {
-            'Content-Type': 'application/json'
+        'Content-Type': 'application/json'
         }
         payload = json.dumps({
-            "xmlsNominasB64": [
-                {
-                    "TipoXML": tipoxml,
-                    "XmlB64": xml.decode("utf-8"),
-                    "CerificadoEmpleadorB64": CerificadoEmpleadorB64.decode("utf-8"),
-                    "PinCertificadoB64": PinCertificadoB64.decode("utf-8"),
-                    "NitEmpleador": NitEmpleador,
-                    "Firmado": False,
-                    "Mensaje": "Sin firmar"
-                }
-            ]
+        "xmlsNominasB64": [
+            {
+            "TipoXML": tipoxml,
+            "XmlB64": xml.decode("utf-8"),
+            "CerificadoEmpleadorB64": CerificadoEmpleadorB64.decode("utf-8"),
+            "PinCertificadoB64": PinCertificadoB64.decode("utf-8"),
+            "NitEmpleador": NitEmpleador,
+            "Firmado": False,
+            "Mensaje": "Sin firmar"
+            }
+        ]
         })
-        response = requests.request("POST", "http://apps.kiai.co/api/Mediador/FirmarXmlNomina",
-                                    data=payload, headers=headers, auth=("900395252", "tufactura.co@softwareestrategico.com"))
+        response = requests.request("POST", "http://apps.kiai.co/api/Mediador/FirmarXmlNomina", data=payload, headers=headers, auth=("900395252", "tufactura.co@softwareestrategico.com"))
         if response.status_code == 200:
             return response.json()
         else:
             return {}
-
+    
     def sign_request_post(self, post_xml_to_sign):
         dian_constants = self._get_dian_constants()
         parser = etree.XMLParser(remove_blank_text=True)
-        data_xml_send = etree.tostring(
-            etree.XML(post_xml_to_sign, parser=parser))
+        data_xml_send = etree.tostring(etree.XML(post_xml_to_sign, parser=parser))
         data_xml_send = data_xml_send.decode()
         #   Generar DigestValue Elemento to y lo reemplaza en el xml
         ElementTO = etree.fromstring(data_xml_send)
@@ -1977,8 +1818,7 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         ElementTO = etree.fromstring(ElementTO)
         ElementTO = etree.tostring(ElementTO[2])
         DigestValueTO = self.generate_digestvalue_to(ElementTO)
-        data_xml_send = data_xml_send.replace(
-            '<ds:DigestValue/>', '<ds:DigestValue>%s</ds:DigestValue>' % DigestValueTO)
+        data_xml_send = data_xml_send.replace('<ds:DigestValue/>','<ds:DigestValue>%s</ds:DigestValue>' % DigestValueTO)
         #   Generar firma para el header de envío con el Signedinfo
         Signedinfo = etree.fromstring(data_xml_send)
         Signedinfo = etree.tostring(Signedinfo[0])
@@ -1992,10 +1832,8 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         Signedinfo = Signedinfo.replace('<ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:wsa="http://www.w3.org/2005/08/addressing" xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wcf="http://wcf.dian.colombia">',
                                         '<ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wcf="http://wcf.dian.colombia" xmlns:wsa="http://www.w3.org/2005/08/addressing">')
         password = dian_constants['CertificateKey']
-        SignatureValue = self.generate_SignatureValue_GetStatus(
-            dian_constants['document_repository'], password, Signedinfo, dian_constants['archivo_pem'], dian_constants['archivo_certificado'])
-        data_xml_send = data_xml_send.replace(
-            '<ds:SignatureValue/>', '<ds:SignatureValue>%s</ds:SignatureValue>' % SignatureValue)
+        SignatureValue = self.generate_SignatureValue_GetStatus(dian_constants['document_repository'], password, Signedinfo, dian_constants['archivo_pem'], dian_constants['archivo_certificado'])
+        data_xml_send = data_xml_send.replace('<ds:SignatureValue/>','<ds:SignatureValue>%s</ds:SignatureValue>' % SignatureValue)
         return data_xml_send
 
     def send_2_validate(self):
@@ -2009,26 +1847,19 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         result = '<?xml version="1.0" encoding="UTF-8"?>' + result
         _logger.info(result)
         result = base64.b64encode(result.encode("utf-8"))
-        archivo_key = dian_constants['document_repository'] + \
-            '/' + dian_constants['archivo_certificado']
+        archivo_key = dian_constants['document_repository'] + '/' + dian_constants['archivo_certificado']
         CerificadoEmpleadorB64 = open(archivo_key, 'rb').read()
         CerificadoEmpleadorB64 = base64.b64encode(CerificadoEmpleadorB64)
-        PinCertificadoB64 = base64.b64encode(
-            dian_constants['CertificateKey'].encode("ascii"))
+        PinCertificadoB64 = base64.b64encode(dian_constants['CertificateKey'].encode("ascii"))
         NitEmpleador = dian_constants['NitSinDV']
-        result = self.generate_xmlsigned(
-            code_doc, result, CerificadoEmpleadorB64, PinCertificadoB64, NitEmpleador)
+        result = self.generate_xmlsigned(code_doc, result, CerificadoEmpleadorB64, PinCertificadoB64, NitEmpleador)
         if result.get("XmlsNominasB64", []) and result.get("XmlsNominasB64", [])[0].get("Firmado", False):
-            result = result.get("XmlsNominasB64", []) and result.get(
-                "XmlsNominasB64", [])[0].get("XmlB64", "")
+            result = result.get("XmlsNominasB64", []) and result.get("XmlsNominasB64", [])[0].get("XmlB64", "")
         year_digits = fields.Date.today().strftime('%-y')
-        filename = ('nie%s%s00000001.xml' %
-                    (self.company_id.partner_id.xidentification, year_digits))
-        Document = self._generate_zip_content(filename.replace("xml", 'zip'), base64.b64decode(
-            result), dian_constants['document_repository'], filename)
+        filename = ('nie%s%s00000001.xml' % (self.company_id.partner_id.xidentification, year_digits))
+        Document = self._generate_zip_content(filename.replace("xml", 'zip'), base64.b64decode(result), dian_constants['document_repository'], filename)
         self.l10n_co_payslip_attch_name = filename
-        template_GetStatus_xml = self.company_id.is_test == '1' and self.template_SendNominaSync_xml(
-        ) or self.template_SendNominaSyncTest_xml()
+        template_GetStatus_xml = self.company_id.is_test == '1' and self.template_SendNominaSync_xml() or self.template_SendNominaSyncTest_xml()
         identifier = uuid.uuid4()
         identifierTo = uuid.uuid4()
         identifierSecurityToken = uuid.uuid4()
@@ -2037,28 +1868,25 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
         Expires = timestamp['Expires']
         cer = dian_constants['Certificate']
         data_xml_send = self.generate_SendTestSetAsync_send_xml(template_GetStatus_xml, identifier, Created, Expires,
-                                                                cer, identifierSecurityToken, identifierTo, Document, filename, self.company_id.identificador_set_pruebas_payroll)
+                    cer, identifierSecurityToken, identifierTo, Document, filename, self.company_id.identificador_set_pruebas_payroll)
         msg = ""
-
+        
         data_xml_send = self.sign_request_post(data_xml_send)
         headers = {'content-type': 'application/soap+xml'}
         url = URLSEND[self.company_id.is_test]
         response = requests.post(url, data=data_xml_send, headers=headers)
-
+        
         if response.status_code == 200:
             if self.company_id.is_test == "2":
                 response_dict = xmltodict.parse(response.content)
-                trackId = response_dict.get("s:Envelope", {}).get("s:Body", {}).get(
-                    "SendTestSetAsyncResponse", {}).get("SendTestSetAsyncResult", {}).get("b:ZipKey", '')
+                trackId = response_dict.get("s:Envelope", {}).get("s:Body", {}).get("SendTestSetAsyncResponse", {}).get("SendTestSetAsyncResult", {}).get("b:ZipKey", '')
                 self.trackid = trackId
                 getstatus_xml_send = self.generate_GetStatusZip_send_xml(self.template_GetStatusZip_xml(), identifier, Created, Expires,
-                                                                         cer, identifierSecurityToken, identifierTo, trackId)
+                        cer, identifierSecurityToken, identifierTo, trackId)
                 getstatus_xml_send = self.sign_request_post(getstatus_xml_send)
-                response = requests.post(
-                    url, data=getstatus_xml_send, headers=headers)
+                response = requests.post(url, data=getstatus_xml_send, headers=headers)
                 response_dict = xmltodict.parse(response.content)
-                dian_response_dict = response_dict.get("s:Envelope", {}).get("s:Body", {}).get(
-                    "GetStatusZipResponse", {}).get("GetStatusZipResult", {}).get("b:DianResponse", {})
+                dian_response_dict = response_dict.get("s:Envelope", {}).get("s:Body", {}).get("GetStatusZipResponse", {}).get("GetStatusZipResult", {}).get("b:DianResponse", {})
                 if dian_response_dict.get("b:IsValid", "false") == "true":
                     self.l10n_co_dian_status = "valid"
                 else:
@@ -2066,31 +1894,37 @@ xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" xmlns:xsi="http://www.w3.org/
             else:
                 _logger.info("-"*600)
                 response_dict = xmltodict.parse(response.content)
-                self.trackid = response_dict.get("s:Envelope", {}).get("s:Body", {}).get(
-                    "SendNominaSyncResponse", {}).get("SendNominaSyncResult", {}).get("b:XmlDocumentKey", '')
+                self.trackid = response_dict.get("s:Envelope", {}).get("s:Body", {}).get("SendNominaSyncResponse", {}).get("SendNominaSyncResult", {}).get("b:XmlDocumentKey", '')
                 if response_dict.get("s:Envelope", {}).get("s:Body", {}).get("SendNominaSyncResponse", {}).get("SendNominaSyncResult", {}).get("b:IsValid", "false") == "false":
-                    _logger.info(response_dict.get("s:Envelope", {}).get("s:Body", {}).get("SendNominaSyncResponse", {}).get("SendNominaSyncResult", {}).get("b:ErrorMessage", {}).get("c:string", []))
-                    msg += "<p>Se encontraron los siguientes errores:"
-                if response_dict.get("s:Envelope", {}).get("s:Body", {}).get("SendNominaSyncResponse", {}).get("SendNominaSyncResult", {}).get("b:ErrorMessage", {}).get("c:string", []) is list:
-                    for ms_error in response_dict.get("s:Envelope", {}).get("s:Body", {}).get("SendNominaSyncResponse", {}).get("SendNominaSyncResult", {}).get("b:ErrorMessage", {}).get("c:string", []):
-                        msg +=  ms_error
-                    msg += "</p>"
-                elif isinstance(response_dict.get("s:Envelope", {}).get("s:Body", {}).get("SendNominaSyncResponse", {}).get("SendNominaSyncResult", {}).get("b:ErrorMessage", {}).get("c:string", []), str):
-                    msg += response_dict.get("s:Envelope", {}).get("s:Body", {}).get("SendNominaSyncResponse", {}).get("SendNominaSyncResult", {}).get("b:ErrorMessage", {}).get("c:string", []) + "</p>"
+                    msg += "<p>Se encontraron los siguientes errores:</p>"
+                for ms_error in response_dict.get("s:Envelope", {}).get("s:Body", {}).get("SendNominaSyncResponse", {}).get("SendNominaSyncResult", {}).get("b:ErrorMessage", {}).get("c:string", []):
+                    msg += "<p>" + ms_error + "</p>"
         else:
             msg = "Ha ocurrido algún problema con el servicio del DIAN, por favor intente enviar nuevamente el documento"
-
+        
         if result:
             attachment_id = self.env['ir.attachment'].create({
                 'name': filename,
                 'res_id': self.id,
                 'res_model': self._name,
                 'datas': result,
-                'datas_fname': filename,
+                # 'datas': filename #self.decode_base64(filename),
                 'description': 'Nomina test',
-            })
+                })
             self.message_post(
                 body=msg,
-                attachment_ids=[attachment_id.id],
-                subtype='account.mt_invoice_validated')
-        self.l10n_co_check_trackid_status()
+                attachment_ids=[attachment_id.id])
+
+
+    # def decode_base64(self, data, altchars=b'+/'):
+    #     """Decode base64, padding being optional.
+
+    #     :param data: Base64 data as an ASCII byte string
+    #     :returns: The decoded byte string.
+
+    #     """
+    #     data = re.sub(rb'[^a-zA-Z0-9%s]+' % altchars, b'', data)  # normalize
+    #     missing_padding = len(data) % 4
+    #     if missing_padding:
+    #         data += b'='* (4 - missing_padding)
+    #     return base64.b64decode(data, altchars)
